@@ -436,6 +436,70 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- poll_submissions (centralized polling for CF submissions)
+-- This function should be called by a cron job, not by clients directly
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.poll_submissions(p_handles text[])
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_handle text;
+  v_submissions jsonb;
+  v_fetched_at timestamptz := NOW();
+  v_next_fetch_at timestamptz := NOW() + INTERVAL '60 seconds';
+BEGIN
+  IF array_length(p_handles, 1) IS NULL THEN
+    RETURN json_build_object('ok', true, 'polled', 0);
+  END IF;
+
+  FOR v_handle IN SELECT DISTINCT unnest(p_handles)
+  LOOP
+    IF v_handle IS NULL OR length(trim(v_handle)) = 0 OR v_handle LIKE 'user_%' THEN
+      CONTINUE;
+    END IF;
+
+    BEGIN
+      -- Codeforces API call using HTTP GET
+      SELECT content::jsonb INTO v_submissions
+      FROM http_get(
+        'https://codeforces.com/api/user.status?handle=' || public.url_encode(trim(v_handle)) || '&from=1&count=100',
+        ARRAY[
+          http_header('User-Agent', 'CFClash/1.0 (contact@cfclash.app)'),
+          http_header('Accept', 'application/json')
+        ]
+      );
+
+      -- Check if response is valid
+      IF v_submissions IS NULL OR v_submissions->>'status' != 'OK' THEN
+        CONTINUE;
+      END IF;
+
+      -- Upsert data into cache table
+      INSERT INTO public.submission_cache (cf_handle, submissions, fetched_at, next_fetch_at, updated_at)
+      VALUES (v_handle, (v_submissions->'result'), v_fetched_at, v_next_fetch_at, v_fetched_at)
+      ON CONFLICT (cf_handle) DO UPDATE SET
+        submissions = EXCLUDED.submissions,
+        fetched_at = EXCLUDED.fetched_at,
+        next_fetch_at = EXCLUDED.next_fetch_at,
+        updated_at = EXCLUDED.updated_at;
+
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'Failed to poll handle %: %', v_handle, SQLERRM;
+      CONTINUE;
+    END;
+
+    -- A small delay to avoid hitting CF too hard
+    PERFORM pg_sleep(0.5);
+  END LOOP;
+
+  RETURN json_build_object('ok', true, 'polled', array_length(p_handles, 1));
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Grants
 -- ---------------------------------------------------------------------------
 GRANT EXECUTE ON FUNCTION public.create_room_with_difficulties(text, text, int, int[]) TO authenticated;
@@ -445,6 +509,7 @@ GRANT EXECUTE ON FUNCTION public.handle_room_request(uuid, boolean) TO authentic
 GRANT EXECUTE ON FUNCTION public.start_battle(uuid) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.finalize_battle_points(uuid, jsonb) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.delete_my_account() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.poll_submissions(text[]) TO authenticated, anon;
 
 -- ---------------------------------------------------------------------------
 -- Manual verification (run in SQL editor after migrate)

@@ -15,10 +15,11 @@ import {
   startBattle,
   finalizeBattlePoints,
 } from "@/lib/cfclash-service";
-import { fetchUserStatus, type CfSubmission } from "@/services/codeforces";
+import { type CfSubmission } from "@/services/codeforces";
 import { allocatePointsToRanks, sortIcpc, type IcpcRow } from "@/lib/battleScoring";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { getCachedSubmissions } from "@/services/submission-cache";
 
 interface RoomData {
   id: string;
@@ -300,6 +301,32 @@ export function BattleRoom({ roomId }: { roomId: string }) {
     const statusPerUser: Record<string, Record<string, "none" | "try" | "ok">> = {};
     const metrics: Record<string, { solved: number; penalty: number; last: number | null }> = {};
 
+    const handles = participants
+      .map(p => p.cf_handle?.trim())
+      .filter(h => h && !h.startsWith("user_")) as string[];
+
+    if (handles.length > 0) {
+      try {
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submission-poller`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+            },
+            body: JSON.stringify({ handles, battle_id: roomId }),
+          }
+        );
+
+        if (!response.ok) {
+          console.warn("Failed to trigger poll, using cached data");
+        }
+      } catch (err) {
+        console.warn("Poll trigger failed:", err);
+      }
+    }
+
     for (const part of participants) {
       statusPerUser[part.user_id] = {};
       const handle = part.cf_handle?.trim();
@@ -312,8 +339,15 @@ export function BattleRoom({ roomId }: { roomId: string }) {
         metrics[part.user_id] = { solved: 0, penalty: 0, last: null };
         continue;
       }
+
       try {
-        const subs = await fetchUserStatus(handle, 100);
+        const cached = await getCachedSubmissions(handle);
+        const subs = cached.submissions;
+
+        if (subs.length === 0 && cached.isStale) {
+          console.log(`[Battle] No cached data for ${handle}, will be fetched soon`);
+        }
+
         logCfSubmissionMatchDebug(subs, startedSec, problems, 12);
         const byL = matchSubmissionToProblems(subs, startedSec, problems);
         const solvedSubs = subs
@@ -355,7 +389,6 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       updated_at: new Date().toISOString(),
     });
 
-    // Host updates every row; non-host updates own row only (RLS: user_id = auth.uid()). Realtime unchanged → load() refreshes UI.
     if (isCreator) {
       await Promise.all(
         participants.map((p) =>
@@ -381,7 +414,7 @@ export function BattleRoom({ roomId }: { roomId: string }) {
   useEffect(() => {
     if (!battleActive) return;
     void pollSubmissions();
-    const id = setInterval(() => void pollSubmissions(), 15000);
+    const id = setInterval(() => void pollSubmissions(), 60000);
     return () => clearInterval(id);
   }, [battleActive, pollSubmissions]);
 
@@ -676,7 +709,7 @@ export function BattleRoom({ roomId }: { roomId: string }) {
             </table>
             {battleActive && (
               <p className="text-xs text-muted-foreground text-center mt-4">
-                Polling Codeforces for submissions every 15 seconds…
+                Updating submissions every 60 seconds (cached)…
               </p>
             )}
           </div>
