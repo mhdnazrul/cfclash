@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { GITHUB_ISSUES_URL } from "@/lib/site";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadingFallback } from "@/components/common/LoadingFallback";
 
 interface LbRow {
   total_points: number;
@@ -17,26 +18,48 @@ interface LbRow {
 }
 
 const Profile = () => {
-  const { user, profile, loading, isProfileComplete, refreshProfile } = useAuth();
+  const { user, profile, loading, isProfileComplete } = useAuth();
   const [lb, setLb] = useState<LbRow | null>(null);
   const [lbLoading, setLbLoading] = useState(true);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      setLbLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
     (async () => {
-      const { data } = await supabase.from("leaderboard").select("total_points, total_battles, wins, losses").eq("user_id", user.id).maybeSingle();
-      setLb(data as LbRow | null);
+      const { data, error } = await supabase
+        .from("leaderboard")
+        .select("total_points, total_battles, wins, losses")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      
+      if (cancelled) return;
+      
+      if (error) {
+        console.error("Profile leaderboard query error:", error);
+      } else {
+        setLb(data as LbRow | null);
+      }
       setLbLoading(false);
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id]);
 
   if (loading) {
     return (
       <PageLayout>
-        <div className="flex justify-center py-20 text-muted-foreground">Loading…</div>
+        <LoadingFallback message="Loading profile..." />
       </PageLayout>
     );
   }
+  
   if (!user) return <Navigate to="/auth/signin" replace />;
   if (!isProfileComplete) return <Navigate to="/auth/complete-profile" replace />;
 

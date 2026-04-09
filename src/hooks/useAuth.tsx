@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useRef } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -28,20 +28,65 @@ const AuthContext = createContext<AuthContextType>({
   refreshProfile: async () => {},
 });
 
+const SESSION_TIMEOUT_MS = 10000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+    ),
+  ]);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const initRef = useRef(false);
 
-  const fetchProfile = async (userId: string) => {
-    let { data } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
-    if (!data) {
-      await supabase.from("profiles").upsert({ id: userId } as never);
-      const retry = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
-      data = retry.data;
+  const fetchProfile = async (userId: string, timeoutMs = 8000) => {
+    try {
+      const { data, error } = await withTimeout(
+        supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+        timeoutMs,
+        "Profile fetch timeout"
+      );
+      
+      if (error) {
+        console.error("fetchProfile select error:", error);
+        setProfile(null);
+        return;
+      }
+
+      if (!data) {
+        const { error: upsertErr } = await withTimeout(
+          supabase.from("profiles").upsert({ id: userId }),
+          timeoutMs,
+          "Profile upsert timeout"
+        );
+        if (upsertErr) {
+          console.error("fetchProfile upsert error:", upsertErr);
+          setProfile(null);
+          return;
+        }
+        
+        const retry = await withTimeout(
+          supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+          timeoutMs,
+          "Profile retry fetch timeout"
+        );
+        setProfile((retry.data as Profile | null) ?? null);
+        return;
+      }
+      
+      console.log("Profile fetched:", data);
+      setProfile((data as Profile | null) ?? null);
+    } catch (err) {
+      console.error("fetchProfile unexpected error:", err);
+      setProfile(null);
     }
-    setProfile((data as Profile | null) ?? null);
   };
 
   const refreshProfile = async () => {
@@ -50,39 +95,78 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isProfileComplete = Boolean(profile?.cf_handle && profile.cf_handle.trim().length > 0);
 
-  useEffect(() => {
-    let cancelled = false;
+  const initializeAuth = async (isInitial: boolean) => {
+    if (initRef.current && !isInitial) return;
+    initRef.current = true;
 
-    void (async () => {
+    try {
       const {
         data: { session: initialSession },
-      } = await supabase.auth.getSession();
-      if (cancelled) return;
+        error: sessionError
+      } = await withTimeout(
+        supabase.auth.getSession(),
+        SESSION_TIMEOUT_MS,
+        "Session fetch timeout - continuing without session"
+      );
+      
+      if (sessionError) {
+        console.error("Session error:", sessionError);
+      }
+      console.log("Initial session:", initialSession);
+
       setSession(initialSession);
       setUser(initialSession?.user ?? null);
+      
       if (initialSession?.user) {
         await fetchProfile(initialSession.user.id);
       } else {
         setProfile(null);
       }
-      if (!cancelled) setLoading(false);
-    })();
+    } catch (err) {
+      console.error("Auth init exception:", err);
+      setSession(null);
+      setUser(null);
+      setProfile(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
+      if (isMounted) {
+        console.warn("Auth initialization timeout - forcing loading to false");
+        setLoading(false);
+      }
+    }, SESSION_TIMEOUT_MS + 2000);
+
+    initializeAuth(true).then(() => {
+      if (!isMounted) return;
+    });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      console.log("Auth state changed:", _event, nextSession);
+      
+      if (!isMounted) return;
+      
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
+      
       if (nextSession?.user) {
         await fetchProfile(nextSession.user.id);
       } else {
         setProfile(null);
       }
-      if (!cancelled) setLoading(false);
+      
+      setLoading(false);
     });
 
     return () => {
-      cancelled = true;
+      isMounted = false;
+      clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, []);

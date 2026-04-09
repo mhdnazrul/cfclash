@@ -18,7 +18,6 @@ interface RoomRow {
 }
 
 interface Props {
-  /** @deprecated use navigate internally */
   onJoinRoom?: (id: string) => void;
 }
 
@@ -27,6 +26,7 @@ export function ActiveRooms({ onJoinRoom }: Props) {
   const { user } = useAuth();
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchRooms = useCallback(async () => {
     if (!user?.id) {
@@ -34,16 +34,34 @@ export function ActiveRooms({ onJoinRoom }: Props) {
       setLoading(false);
       return;
     }
+
     setLoading(true);
-    const { data, error } = await supabase
-      .from("rooms" as never)
-      .select("id, display_name, room_code, status, duration_minutes, creator_id, approved_participants")
-      .eq("visibility", "public")
-      .in("status", ["waiting", "active"])
-      .order("created_at", { ascending: false })
-      .limit(30);
-    if (!error && data) setRooms(data as RoomRow[]);
-    setLoading(false);
+    setError(null);
+
+    try {
+      const { data, error: queryError } = await supabase
+        .from("rooms")
+        .select("id, display_name, room_code, status, duration_minutes, creator_id, approved_participants")
+        .eq("visibility", "public")
+        .in("status", ["waiting", "active"])
+        .order("created_at", { ascending: false })
+        .limit(30);
+
+      if (queryError) {
+        console.error("ActiveRooms query error:", queryError);
+        setError("Failed to load rooms");
+        setRooms([]);
+        return;
+      }
+
+      setRooms((data as RoomRow[]) || []);
+    } catch (err) {
+      console.error("ActiveRooms unexpected error:", err);
+      setError("Failed to load rooms");
+      setRooms([]);
+    } finally {
+      setLoading(false);
+    }
   }, [user?.id]);
 
   useEffect(() => {
@@ -53,7 +71,9 @@ export function ActiveRooms({ onJoinRoom }: Props) {
   useEffect(() => {
     const ch = supabase
       .channel("public-rooms-list")
-      .on("postgres_changes", { event: "*", schema: "public", table: "rooms" }, () => fetchRooms())
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms" }, () => {
+        void fetchRooms();
+      })
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
@@ -97,6 +117,21 @@ export function ActiveRooms({ onJoinRoom }: Props) {
         {[1, 2, 3].map((i) => (
           <Skeleton key={i} className="h-36 rounded-xl" />
         ))}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="glass-card p-8 text-center mb-8 rounded-xl border border-destructive/30">
+        <p className="text-destructive mb-2">{error}</p>
+        <button
+          type="button"
+          onClick={() => void fetchRooms()}
+          className="text-sm text-muted-foreground hover:text-foreground underline"
+        >
+          Try again
+        </button>
       </div>
     );
   }

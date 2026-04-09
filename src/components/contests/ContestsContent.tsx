@@ -36,25 +36,35 @@ export function ContestsContent() {
     setError(null);
     try {
       if (user) {
-        await ensureContestsFresh().catch(() => {});
+        // Ensure cache is fresh in background, do NOT block UI
+        console.log("Background caching contests...");
+        ensureContestsFresh().catch((err) => console.error("ensureContestsFresh error:", err));
       }
+
+      console.log("Fetching from Supabase cache...");
       const cached = await getContestsCached();
       setStale(cached.stale);
-      if (cached.rows.length && !cached.error) {
+      
+      if (cached.rows && cached.rows.length > 0 && !cached.error) {
+        console.log("Loaded contests from Supabase Cache:", cached.rows.length);
         setContests(cached.rows);
-        setLoading(false);
-        return;
-      }
-      const live = await fetchContestList();
-      setContests(live as ContestView[]);
-      if (user && live.length) {
-        void syncContestsToSupabase().catch(() => {});
+      } else {
+        console.log("Supabase returned empty or error. Fallback -> Codeforces API...");
+        const live = await fetchContestList();
+        console.log("Loaded contests from live API:", live.length);
+        setContests(live as ContestView[]);
+        
+        if (user && live.length > 0) {
+          syncContestsToSupabase().catch((err) => console.error("Live sync error:", err));
+        }
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load contests");
+      console.error("Contests critical load error:", e);
+      setError(e instanceof Error ? e.message : "Failed to load contests via any method. Is Codeforces down?");
       setContests([]);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [user]);
 
   useEffect(() => {

@@ -6,20 +6,43 @@ import { supabase } from "@/integrations/supabase/client";
 export function StatsCard() {
   const { user } = useAuth();
   const [stats, setStats] = useState({ battles: 0, wins: 0, points: 0, winRate: "0%" });
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
-    supabase.from("leaderboard").select("*").eq("user_id", user.id).single().then(({ data }) => {
-      if (data) {
-        const total = data.wins + data.losses;
-        setStats({
-          battles: data.total_battles,
-          wins: data.wins,
-          points: data.total_points,
-          winRate: total > 0 ? `${Math.round((data.wins / total) * 100)}%` : "0%",
-        });
-      }
-    });
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    supabase
+      .from("leaderboard")
+      .select("*")
+      .eq("user_id", user.id)
+      .single()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        
+        if (error) {
+          console.error("StatsCard query error:", error);
+        } else if (data) {
+          const total = data.wins + data.losses;
+          setStats({
+            battles: data.total_battles ?? 0,
+            wins: data.wins ?? 0,
+            points: data.total_points ?? 0,
+            winRate: total > 0 ? `${Math.round((data.wins / total) * 100)}%` : "0%",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   const items = [

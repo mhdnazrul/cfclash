@@ -1,7 +1,7 @@
 import { Calendar, ExternalLink } from "lucide-react";
 
 interface Props {
-  contest: { id: number; name: string; startTimeSeconds: number; durationSeconds: number; };
+  contest: { id: number; name: string; startTimeSeconds?: number; durationSeconds: number; };
   division: string;
 }
 
@@ -17,7 +17,7 @@ function getDivisionColor(division: string): string {
 }
 
 export function ContestCard({ contest, division }: Props) {
-  const date = new Date(contest.startTimeSeconds * 1000);
+  const date = contest.startTimeSeconds ? new Date(contest.startTimeSeconds * 1000) : null;
 
   return (
     <a href={`https://codeforces.com/contest/${contest.id}`} target="_blank" rel="noopener noreferrer"
@@ -32,7 +32,7 @@ export function ContestCard({ contest, division }: Props) {
         <div className="flex items-center gap-4 text-muted-foreground text-sm">
           <div className="flex items-center gap-1.5">
             <Calendar className="w-4 h-4" />
-            <span>{date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+            <span>{date ? date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "TBA"}</span>
           </div>
         </div>
         <div className="flex items-center gap-1.5 text-primary text-sm opacity-0 group-hover:opacity-100 transition-opacity">

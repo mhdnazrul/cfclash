@@ -8,26 +8,58 @@ interface Battle { id: string; room_code: string; status: string; created_at: st
 export function BattleHistory() {
   const { user } = useAuth();
   const [battles, setBattles] = useState<Battle[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
     supabase
       .from("room_participants")
       .select("room_id, rooms(id, room_code, status, created_at)")
       .eq("user_id", user.id)
       .order("joined_at", { ascending: false })
       .limit(5)
-      .then(({ data }) => {
-        if (data) {
-          setBattles(data.map((d: any) => ({
-            id: d.rooms.id,
-            room_code: d.rooms.room_code,
-            status: d.rooms.status,
-            created_at: d.rooms.created_at,
-          })));
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        
+        if (error) {
+          console.error("BattleHistory query error:", error);
+          setBattles([]);
+        } else if (data) {
+          setBattles(data.map((d) => ({
+            id: d.rooms?.id,
+            room_code: d.rooms?.room_code,
+            status: d.rooms?.status,
+            created_at: d.rooms?.created_at,
+          })).filter((b) => b.id));
         }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
+
+  if (loading) {
+    return (
+      <div className="glass-card-hover p-6">
+        <h3 className="text-lg font-semibold text-foreground mb-4">Recent Battles</h3>
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-12 bg-secondary/20 rounded-lg animate-pulse" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="glass-card-hover p-6">
@@ -48,7 +80,7 @@ export function BattleHistory() {
                 </span>
                 <Clock className="w-3 h-3 text-muted-foreground" />
                 <span className="text-xs text-muted-foreground">
-                  {new Date(b.created_at).toLocaleDateString()}
+                  {b.created_at ? new Date(b.created_at).toLocaleDateString() : '-'}
                 </span>
               </div>
             </div>
