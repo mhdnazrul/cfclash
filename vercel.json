@@ -1,5 +1,5 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/" }],
+  "rewrites": [{ "source": "/((?!api/).*)", "destination": "/" }],
   "headers": [
     {
       "source": "/assets/(.*)",
@@ -9,6 +9,12 @@
           "value": "public, max-age=31536000, immutable"
         }
       ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/sync-codeforces-cron",
+      "schedule": "0 0 */2 * *" 
     }
   ]
 }

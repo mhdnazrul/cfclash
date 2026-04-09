@@ -35,17 +35,13 @@ export function SignUpForm() {
     if (error) { toast.error(error.message); setLoading(false); return; }
 
     if (data.user) {
-      const { error: profileError } = await supabase.from("profiles").insert({
+      // profile row is auto-created by DB trigger; this upsert only sets first cf_handle.
+      const { error: profileError } = await supabase.from("profiles").upsert({
         id: data.user.id,
         cf_handle: cfHandle,
-      });
+        display_email: email,
+      } as never);
       if (profileError) { toast.error("Failed to save profile: " + profileError.message); setLoading(false); return; }
-
-      // Also create leaderboard entry
-      await supabase.from("leaderboard").insert({
-        user_id: data.user.id,
-        cf_handle: cfHandle,
-      });
     }
 
     setLoading(false);
@@ -57,7 +53,7 @@ export function SignUpForm() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/complete-profile`,
+        redirectTo: `${window.location.origin}/dashboard`,
       },
     });
     if (error) toast.error(error.message);

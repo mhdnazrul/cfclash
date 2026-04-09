@@ -4,7 +4,9 @@ import path from "path";
 import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
+// SPA: dev server already serves index.html for client-side routes on refresh (no webpack historyApiFallback).
 export default defineConfig(({ mode }) => ({
+  appType: "spa",
   server: {
     host: "::",
     port: 8080,

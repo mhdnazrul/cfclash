@@ -35,7 +35,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const fetchProfile = async (userId: string) => {
-    const { data } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+    let { data } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+    if (!data) {
+      await supabase.from("profiles").upsert({ id: userId } as never);
+      const retry = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+      data = retry.data;
+    }
     setProfile((data as Profile | null) ?? null);
   };
 
@@ -46,29 +51,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isProfileComplete = Boolean(profile?.cf_handle && profile.cf_handle.trim().length > 0);
 
   useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const {
+        data: { session: initialSession },
+      } = await supabase.auth.getSession();
+      if (cancelled) return;
+      setSession(initialSession);
+      setUser(initialSession?.user ?? null);
+      if (initialSession?.user) {
+        await fetchProfile(initialSession.user.id);
+      } else {
+        setProfile(null);
+      }
+      if (!cancelled) setLoading(false);
+    })();
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       if (nextSession?.user) {
-        setTimeout(() => fetchProfile(nextSession.user.id), 0);
+        await fetchProfile(nextSession.user.id);
       } else {
         setProfile(null);
       }
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
-      if (initialSession?.user) {
-        fetchProfile(initialSession.user.id);
-      }
-      setLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, []);
 
   return <AuthContext.Provider value={{ user, session, loading, profile, isProfileComplete, refreshProfile }}>{children}</AuthContext.Provider>;

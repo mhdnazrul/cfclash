@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Trophy, Medal, TrendingUp } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface LeaderboardEntry {
   user_id: string; cf_handle: string; total_points: number;
@@ -50,7 +51,11 @@ export function LeaderboardContent() {
         </div>
 
         {loading ? (
-          <div className="text-center py-16 text-muted-foreground">Loading leaderboard...</div>
+          <div className="glass-card overflow-hidden p-4 space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <Skeleton key={i} className="h-12 w-full rounded-lg" />
+            ))}
+          </div>
         ) : entries.length === 0 ? (
           <div className="glass-card p-12 text-center">
             <p className="text-muted-foreground">No entries yet. Start battling to appear here!</p>

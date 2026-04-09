@@ -1,69 +1,163 @@
-# cfclash Production Guide (Vercel + Supabase)
 
-## What is already implemented
+# ⚔️ CFClash
 
-- Supabase Auth (Email/Password + Google OAuth)
-- Profile completion gate before battle access
-- Battle room creation via RPC + problem cache
-- Join request / approval notification flow
-- Realtime subscriptions for room and notification updates
-- Vercel SPA routing support via `vercel.json`
+A real-time competitive battle platform built with **React + TypeScript + Vite + Supabase**, where users can challenge each other using Codeforces problems.
 
-## Required environment variables
+CFClash enables:
+- Duel-style battles
+- Difficulty-based problem selection
+- Real-time syncing of submissions
+- Automated Codeforces data synchronization
+- Scalable backend powered by Supabase
 
-### Frontend (Vercel Project Settings -> Environment Variables)
+---
 
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`  
-  (app also accepts `VITE_SUPABASE_PUBLISHABLE_KEY`)
+## ✨ Features
 
-### Problem sync job (server-side script / cron only)
+- 🔐 Authentication via Supabase Auth
+- ⚔️ Create and join battle rooms
+- 🎯 Dynamic problem selection by difficulty
+- 📡 Real-time updates using Supabase Realtime
+- 🤖 Codeforces API integration
+- ⏱️ Automated contest/problem syncing
+- 🧠 Battle tracking and result evaluation
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+---
 
-## Database migration
+## 📦 Tech Stack
 
-Run in Supabase SQL editor:
+- **Frontend:** React, TypeScript, Vite
+- **Backend:** Supabase (PostgreSQL + Auth + Realtime)
+- **External API:** Codeforces API
+- **Deployment:** Vercel
+- **Cron Jobs:** Vercel Cron
 
-- `supabase/migrations/20260407090000_cfclash_prod_backend.sql`
+---
 
-This migration includes:
+## 🚀 Getting Started
 
-- schema updates for rooms, notifications, room requests, problems
-- RLS policies
-- secured RPC functions
-- RPC execute grants restricted to `authenticated` users
-
-## Problem cache sync
-
-Initial + daily:
+### 1. Clone the repository
 
 ```bash
-npm run sync:problems
+git clone https://github.com/mhdnazrul/cfclash.git
+cd cfclash
+````
+
+#### 2. Install dependencies
+
+```bash
+npm install
 ```
 
-Use a scheduler (GitHub Actions, cron, Railway, etc.) to run once per day.
+#### 3. Setup environment variables
 
-## Deploy to Vercel checklist
+Create a `.env.local` file:
 
-1. Push code to GitHub.
-2. Import repository in Vercel.
-3. Add env vars:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON_KEY`
-4. In Supabase Auth settings, set redirect URLs:
-   - `https://YOUR_DOMAIN/auth/complete-profile`
-   - `https://YOUR_DOMAIN/dashboard`
-   - optional preview URL wildcard(s)
-5. Deploy and verify:
-   - Google login redirect works
-   - Email/password login works
-   - Deep links (`/dashboard`, `/battle-arena`) load (rewrite via `vercel.json`)
-   - Room request/approve flow works in realtime
+```env
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_CF_API_BASE=https://codeforces.com/api
+```
 
-## Security notes
+### 4. Run the development server
 
-- Never commit `.env` files or local secret text files.
-- Rotate credentials immediately if they were exposed previously.
-- Keep `service_role` keys only in backend/cron environments, never in browser code.
+```bash
+npm run dev
+```
+
+---
+
+## 📘 Documentation
+
+* 📌 Setup Guide → [`docs/setup.md`](./docs/setup.md)
+* 🔄 Workflow Overview → [`docs/workflow.md`](./docs/workflow.md)
+
+---
+
+## ⚙️ Available Scripts
+
+| Command                 | Description                          |
+| ----------------------- | ------------------------------------ |
+| `npm run dev`           | Start development server             |
+| `npm run build`         | Build production bundle              |
+| `npm run lint`          | Run ESLint checks                    |
+| `npm test`              | Run tests with Vitest                |
+| `npm run sync:problems` | Sync Codeforces problems to Supabase |
+
+---
+
+## 🌍 Environment Variables
+
+### Frontend (Client-side)
+
+
+
+| Variable                 | Description                        |
+| ------------------------ | ---------------------------------- |
+| `VITE_SUPABASE_URL`      | Supabase project URL               |
+| `VITE_SUPABASE_ANON_KEY` | Public anon key                    |
+| `VITE_CF_API_BASE`       | Codeforces API base URL (optional) |
+
+> ⚠️ Never expose the service role key to the public
+
+### Server-side (Vercel / scripts only)
+
+| Variable                    | Description                             |
+| --------------------------- | --------------------------------------- |
+| `SUPABASE_URL`              | Supabase project URL                    |
+| `SUPABASE_SERVICE_ROLE_KEY` | Admin/service role key                  |
+| `CRON_SECRET`               | Secret token for securing cron endpoint |
+
+---
+
+
+## 🧩 Project Architecture
+
+* Frontend communicates with Supabase directly using anon key
+* Supabase handles:
+
+  * Auth
+  * Database
+  * Realtime subscriptions
+* Server-side:
+
+  * Cron jobs sync Codeforces data
+  * Scripts populate problems table
+* Codeforces API used for:
+
+  * Problem metadata
+  * Contest data
+  * Submission polling
+
+---
+
+## 🤝 Contributing
+
+1. Please read the [`/docs/SETUP.md`](./docs/SETUP.md) file, which has a proper setup guide.
+2. Fork the repo
+3. Create a feature branch
+4. Follow existing code style
+5. Test changes locally
+6. Submit a pull request
+
+
+---
+## 👨‍💻 About the Developer
+
+**Nazrul Islam** *B.Sc. in Computer Science and Engineering | Premier University, Chittagong*
+
+Passionate about software development, competitive programming, and exploring new technologies like IoT and AI. I love building open-source projects and sharing tech knowledge.
+
+- 🔭 Currently working on:  ***[AI Hex Game](https://github.com/mhdnazrul/11-11-Hex-board-game) / [shopfinity](https://github.com/mhdnazrul/Shopfinity)***
+- 🌱 Learning & exploring: Mobile App Development and UI/UX Design
+- ⚡ Fun fact: I run a YouTube channel called ***[Tech 2 Hi-Tek - Technology for You](#)***
+- 📫 How to reach me: ***nazrul.puc.cse@gmail.com***
+
+### 🌐 Connect with me:
+<p align="left">
+  <a href="https://linkedin.com/in/nazrulislam7" target="blank"><img align="center" src="https://raw.githubusercontent.com/rahuldkjain/github-profile-readme-generator/master/src/images/icons/Social/linked-in-alt.svg" alt="LinkedIn" height="30" width="40" /></a>
+  <a href="https://github.com/mhdnazrul" target="blank"><img align="center" src="https://raw.githubusercontent.com/rahuldkjain/github-profile-readme-generator/master/src/images/icons/Social/github.svg" alt="GitHub" height="30" width="40" /></a>
+  <a href="https://codeforces.com/profile/nazrulislam_7" target="blank"><img align="center" src="https://raw.githubusercontent.com/rahuldkjain/github-profile-readme-generator/master/src/images/icons/Social/codeforces.svg" alt="Codeforces" height="30" width="40" /></a>
+</p>
+
+---
