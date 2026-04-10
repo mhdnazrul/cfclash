@@ -15,24 +15,30 @@ const MAX_RETRIES = 3;
 
 const backoffMap = new Map<string, number>();
 
+// CORS headers — must include "apikey" or the browser will block the preflight.
+// This was the root cause of the CORS error:
+//   "Request header field apikey is not allowed"
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 Deno.serve(async (req: Request) => {
+  // Handle CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      },
-    });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
+    console.log("[submission-poller] Called, method:", req.method);
+
     const { handles, battle_id } = await req.json();
 
     if (!handles || !Array.isArray(handles) || handles.length === 0) {
       return Response.json(
         { error: "handles array is required" },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -42,18 +48,21 @@ Deno.serve(async (req: Request) => {
     if (!supabaseUrl || !supabaseKey) {
       return Response.json(
         { error: "Missing Supabase environment variables" },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
     const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
 
-    const uniqueHandles = [...new Set(handles.filter(h => h && !h.startsWith("user_")))];
+    const uniqueHandles = [...new Set(handles.filter((h: string) => h && !h.startsWith("user_")))];
     const results: Record<string, { submissions: CfSubmission[]; error?: string }> = {};
+
+    console.log("[submission-poller] Polling", uniqueHandles.length, "handles for battle:", battle_id);
 
     for (const handle of uniqueHandles) {
       const result = await pollWithBackoff(handle);
       results[handle] = result;
+      console.log(`[submission-poller] ${handle}: ${result.submissions.length} submissions${result.error ? `, error: ${result.error}` : ""}`);
 
       await updateCache(supabase, handle, result.submissions);
 
@@ -68,16 +77,14 @@ Deno.serve(async (req: Request) => {
       results,
       polled_at: new Date().toISOString(),
     }, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: corsHeaders,
     });
 
   } catch (error) {
-    console.error("Poll error:", error);
+    console.error("[submission-poller] Error:", error);
     return Response.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 });

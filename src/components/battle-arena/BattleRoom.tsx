@@ -392,7 +392,7 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       }
 
       try {
-        // FIX BUG 1: Use edge function data if available, else fall back to cache
+        // Use edge function data if available, else fall back to cache
         let subs: CfSubmission[] = [];
         if (edgeFunctionData?.[handle]?.submissions) {
           subs = edgeFunctionData[handle].submissions;
@@ -402,11 +402,36 @@ export function BattleRoom({ roomId }: { roomId: string }) {
           subs = cached.submissions;
           if (subs.length === 0 && cached.isStale) {
             console.log(`[Battle] No cached data for ${handle}, will be fetched on next poll`);
+          } else if (subs.length > 0) {
+            console.log(`[Battle] Using ${subs.length} cached submissions for ${handle}`);
+          }
+        }
+
+        // Debug: log accepted submissions that happened after battle start
+        const acceptedAfterStart = subs.filter(
+          s => s.verdict === "OK" && s.creationTimeSeconds >= startedSec
+        );
+        if (acceptedAfterStart.length > 0) {
+          console.log(`[Battle] ${handle}: ${acceptedAfterStart.length} accepted submissions after battle start:`);
+          for (const s of acceptedAfterStart.slice(0, 5)) {
+            console.log(`  → contestId=${s.problem.contestId}, index=${s.problem.index}, name=${s.problem.name}`);
+          }
+          console.log(`[Battle] Room problems to match against:`);
+          for (const pr of curProblems) {
+            console.log(`  → label=${pr.problem_label}, contestId=${pr.contest_id}, index=${pr.problem_index}`);
           }
         }
 
         logCfSubmissionMatchDebug(subs, startedSec, curProblems, 12);
         const byL = matchSubmissionToProblems(subs, startedSec, curProblems);
+
+        // Debug: log what matched
+        const solvedLabels = Object.entries(byL).filter(([, v]) => v === "ok").map(([k]) => k);
+        const triedLabels = Object.entries(byL).filter(([, v]) => v === "try").map(([k]) => k);
+        if (solvedLabels.length > 0 || triedLabels.length > 0) {
+          console.log(`[Battle] ${handle}: solved=[${solvedLabels}], tried=[${triedLabels}]`);
+        }
+
         const solvedSubs = subs
           .filter(
             (s) =>
@@ -426,7 +451,8 @@ export function BattleRoom({ roomId }: { roomId: string }) {
           penalty: Object.values(byL).filter((v) => v === "try").length + Object.values(byL).filter((v) => v === "ok").length,
           last: solvedSubs.length ? solvedSubs[solvedSubs.length - 1].creationTimeSeconds : null,
         };
-      } catch {
+      } catch (catchErr) {
+        console.error(`[Battle] Error processing submissions for ${handle}:`, catchErr);
         for (const pr of curProblems) {
           if (!nextGrid[pr.problem_label]) nextGrid[pr.problem_label] = {};
           nextGrid[pr.problem_label][part.user_id] = "none";
