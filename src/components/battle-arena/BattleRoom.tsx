@@ -115,6 +115,19 @@ export function BattleRoom({ roomId }: { roomId: string }) {
   const [nowTick, setNowTick] = useState(Date.now());
   const [finalizing, setFinalizing] = useState(false);
 
+  // --- FIX: Refs to break infinite loop ---
+  // Keep latest values in refs so pollSubmissions doesn't need them as deps
+  const participantsRef = useRef<Participant[]>([]);
+  participantsRef.current = participants;
+  const problemsRef = useRef<RoomProblem[]>([]);
+  problemsRef.current = problems;
+  const roomRef = useRef<RoomData | null>(null);
+  roomRef.current = room;
+  // Guard: ignore realtime events triggered by our own writes
+  const writeGuardRef = useRef(false);
+  // Debounce timer for realtime-triggered loads
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const isCreator = user?.id === room?.creator_id;
   const approved = room?.approved_participants ?? [];
   const isParticipant = !!(user?.id && approved.includes(user.id));
@@ -249,17 +262,29 @@ export function BattleRoom({ roomId }: { roomId: string }) {
     void load();
   }, [load]);
 
+  // --- FIX: Debounced realtime handler to prevent cascade ---
+  // When our own writes trigger a realtime event, the writeGuard blocks immediate re-load.
+  // All realtime events are debounced by 500ms so rapid-fire events coalesce into one load.
+  const debouncedLoad = useCallback(() => {
+    if (writeGuardRef.current) return; // ignore our own writes
+    if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+    realtimeDebounceRef.current = setTimeout(() => {
+      void load();
+    }, 500);
+  }, [load]);
+
   useEffect(() => {
     const ch = supabase
       .channel(`room-${roomId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, () => load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "room_participants", filter: `room_id=eq.${roomId}` }, () => load())
-      .on("postgres_changes", { event: "*", schema: "public", table: "join_requests", filter: `room_id=eq.${roomId}` }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, debouncedLoad)
+      .on("postgres_changes", { event: "*", schema: "public", table: "room_participants", filter: `room_id=eq.${roomId}` }, debouncedLoad)
+      .on("postgres_changes", { event: "*", schema: "public", table: "join_requests", filter: `room_id=eq.${roomId}` }, debouncedLoad)
       .subscribe();
     return () => {
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
       supabase.removeChannel(ch);
     };
-  }, [roomId, load]);
+  }, [roomId, debouncedLoad]);
 
   const startedSec = room?.started_at ? Math.floor(new Date(room.started_at).getTime() / 1000) : null;
   const battleActive = room?.status === "active" && startedSec != null;
@@ -294,14 +319,20 @@ export function BattleRoom({ roomId }: { roomId: string }) {
     return byLabel;
   }, []);
 
+  // --- FIX: Use refs to read latest state, so pollSubmissions has stable deps ---
   const pollSubmissions = useCallback(async () => {
-    if (!battleActive || !startedSec || !problems.length || !participants.length) return;
+    const curProblems = problemsRef.current;
+    const curParticipants = participantsRef.current;
+    const curRoom = roomRef.current;
+    const curIsCreator = user?.id === curRoom?.creator_id;
+
+    if (!battleActive || !startedSec || !curProblems.length || !curParticipants.length) return;
     const nextGrid: Record<string, Record<string, "none" | "try" | "ok">> = {};
-    for (const p of problems) nextGrid[p.problem_label] = {};
+    for (const p of curProblems) nextGrid[p.problem_label] = {};
     const statusPerUser: Record<string, Record<string, "none" | "try" | "ok">> = {};
     const metrics: Record<string, { solved: number; penalty: number; last: number | null }> = {};
 
-    const handles = participants
+    const handles = curParticipants
       .map(p => p.cf_handle?.trim())
       .filter(h => h && !h.startsWith("user_")) as string[];
 
@@ -327,11 +358,11 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       }
     }
 
-    for (const part of participants) {
+    for (const part of curParticipants) {
       statusPerUser[part.user_id] = {};
       const handle = part.cf_handle?.trim();
       if (!handle || handle.startsWith("user_")) {
-        for (const pr of problems) {
+        for (const pr of curProblems) {
           if (!nextGrid[pr.problem_label]) nextGrid[pr.problem_label] = {};
           nextGrid[pr.problem_label][part.user_id] = "none";
           statusPerUser[part.user_id][pr.problem_label] = "none";
@@ -348,18 +379,18 @@ export function BattleRoom({ roomId }: { roomId: string }) {
           console.log(`[Battle] No cached data for ${handle}, will be fetched soon`);
         }
 
-        logCfSubmissionMatchDebug(subs, startedSec, problems, 12);
-        const byL = matchSubmissionToProblems(subs, startedSec, problems);
+        logCfSubmissionMatchDebug(subs, startedSec, curProblems, 12);
+        const byL = matchSubmissionToProblems(subs, startedSec, curProblems);
         const solvedSubs = subs
           .filter(
             (s) =>
               s.verdict === "OK" &&
               s.creationTimeSeconds >= startedSec &&
-              problems.some((pr) => submissionMatchesRoomProblem(s, startedSec, pr)),
+              curProblems.some((pr) => submissionMatchesRoomProblem(s, startedSec, pr)),
           )
           .sort((a, b) => a.creationTimeSeconds - b.creationTimeSeconds);
 
-        for (const pr of problems) {
+        for (const pr of curProblems) {
           if (!nextGrid[pr.problem_label]) nextGrid[pr.problem_label] = {};
           nextGrid[pr.problem_label][part.user_id] = byL[pr.problem_label] ?? "none";
           statusPerUser[part.user_id][pr.problem_label] = byL[pr.problem_label] ?? "none";
@@ -370,7 +401,7 @@ export function BattleRoom({ roomId }: { roomId: string }) {
           last: solvedSubs.length ? solvedSubs[solvedSubs.length - 1].creationTimeSeconds : null,
         };
       } catch {
-        for (const pr of problems) {
+        for (const pr of curProblems) {
           if (!nextGrid[pr.problem_label]) nextGrid[pr.problem_label] = {};
           nextGrid[pr.problem_label][part.user_id] = "none";
           statusPerUser[part.user_id][pr.problem_label] = "none";
@@ -380,6 +411,8 @@ export function BattleRoom({ roomId }: { roomId: string }) {
     }
     setGrid(nextGrid);
 
+    // --- FIX: Set write guard BEFORE writing to DB ---
+    // This prevents the realtime subscription from calling load() for our own writes
     const rowPayload = (p: Participant) => ({
       cf_handle: p.cf_handle?.trim() || "",
       solved_count: metrics[p.user_id]?.solved ?? 0,
@@ -389,27 +422,34 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       updated_at: new Date().toISOString(),
     });
 
-    if (isCreator) {
-      await Promise.all(
-        participants.map((p) =>
-          supabase
+    writeGuardRef.current = true;
+    try {
+      if (curIsCreator) {
+        await Promise.all(
+          curParticipants.map((p) =>
+            supabase
+              .from("room_participants" as never)
+              .update(rowPayload(p) as never)
+              .eq("room_id", roomId)
+              .eq("user_id", p.user_id),
+          ),
+        );
+      } else if (user?.id) {
+        const me = curParticipants.find((p) => p.user_id === user.id);
+        if (me) {
+          await supabase
             .from("room_participants" as never)
-            .update(rowPayload(p) as never)
+            .update(rowPayload(me) as never)
             .eq("room_id", roomId)
-            .eq("user_id", p.user_id),
-        ),
-      );
-    } else if (user?.id) {
-      const me = participants.find((p) => p.user_id === user.id);
-      if (me) {
-        await supabase
-          .from("room_participants" as never)
-          .update(rowPayload(me) as never)
-          .eq("room_id", roomId)
-          .eq("user_id", user.id);
+            .eq("user_id", user.id);
+        }
       }
+    } finally {
+      // Keep guard active for 2s to let realtime events pass through
+      setTimeout(() => { writeGuardRef.current = false; }, 2000);
     }
-  }, [battleActive, startedSec, problems, participants, matchSubmissionToProblems, isCreator, roomId, user?.id]);
+  }, [battleActive, startedSec, matchSubmissionToProblems, roomId, user?.id]);
+  // ^^^ FIX: Removed `problems` and `participants` from deps — read from refs instead
 
   useEffect(() => {
     if (!battleActive) return;

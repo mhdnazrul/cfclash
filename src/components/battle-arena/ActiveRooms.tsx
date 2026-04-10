@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Users, Clock } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -27,6 +27,7 @@ export function ActiveRooms({ onJoinRoom }: Props) {
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchRooms = useCallback(async () => {
     if (!user?.id) {
@@ -68,14 +69,19 @@ export function ActiveRooms({ onJoinRoom }: Props) {
     void fetchRooms();
   }, [fetchRooms]);
 
+  // --- FIX: Debounce realtime to prevent rapid re-fetches ---
   useEffect(() => {
     const ch = supabase
       .channel("public-rooms-list")
       .on("postgres_changes", { event: "*", schema: "public", table: "rooms" }, () => {
-        void fetchRooms();
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(() => {
+          void fetchRooms();
+        }, 500);
       })
       .subscribe();
     return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
       supabase.removeChannel(ch);
     };
   }, [fetchRooms]);
