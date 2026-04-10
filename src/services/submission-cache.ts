@@ -42,11 +42,22 @@ export async function requestPoll(handles: string[], battleId?: string): Promise
   if (uniqueHandles.length === 0) return;
 
   try {
+    // FIX: Supabase edge functions need apikey header + user JWT as Bearer token.
+    // The old code used the anon key as Bearer — Supabase rejected it with 401.
+    const { data: { session } } = await supabase.auth.getSession();
+    const accessToken = session?.access_token;
+
+    if (!accessToken) {
+      console.warn("[submission-cache] No session token, cannot call edge function");
+      return;
+    }
+
     const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submission-poller`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         handles: uniqueHandles,
@@ -56,7 +67,7 @@ export async function requestPoll(handles: string[], battleId?: string): Promise
 
     if (!response.ok) {
       const error = await response.text();
-      console.error("Poll request failed:", error);
+      console.error("Poll request failed:", response.status, error);
       throw new Error("Failed to trigger poll");
     }
 

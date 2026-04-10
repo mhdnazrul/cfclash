@@ -10,9 +10,14 @@ export function RatingGraph() {
 
   useEffect(() => {
     if (!profile?.cf_handle) return;
-    fetch(`https://codeforces.com/api/user.rating?handle=${profile.cf_handle}`)
-      .then(r => r.json())
+    let cancelled = false;
+    fetch(`https://codeforces.com/api/user.rating?handle=${encodeURIComponent(profile.cf_handle)}`)
+      .then(r => {
+        if (!r.ok) throw new Error(`CF API ${r.status}`);
+        return r.json();
+      })
       .then(res => {
+        if (cancelled) return;
         if (res.status === "OK") {
           const entries = res.result.slice(-15).map((r: any) => ({
             contest: r.contestName.substring(0, 20),
@@ -21,7 +26,10 @@ export function RatingGraph() {
           }));
           setData(entries);
         }
-      }).catch(() => {});
+      }).catch((err) => {
+        if (!cancelled) console.warn("RatingGraph: CF API error (non-critical):", err.message);
+      });
+    return () => { cancelled = true; };
   }, [profile?.cf_handle]);
 
   const ratingBands = [

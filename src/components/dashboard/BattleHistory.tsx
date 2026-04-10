@@ -3,7 +3,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { Swords, Clock } from "lucide-react";
 
-interface Battle { id: string; room_code: string; status: string; created_at: string; }
+interface Battle { id: string; room_code: string; display_name: string | null; status: string; created_at: string; }
 
 export function BattleHistory() {
   const { user } = useAuth();
@@ -20,7 +20,7 @@ export function BattleHistory() {
 
     supabase
       .from("room_participants")
-      .select("room_id, rooms(id, room_code, status, created_at)")
+      .select("room_id, rooms(id, room_code, display_name, status, created_at)")
       .eq("user_id", user.id)
       .order("joined_at", { ascending: false })
       .limit(5)
@@ -34,6 +34,7 @@ export function BattleHistory() {
           setBattles(data.map((d) => ({
             id: d.rooms?.id,
             room_code: d.rooms?.room_code,
+            display_name: d.rooms?.display_name ?? null,
             status: d.rooms?.status,
             created_at: d.rooms?.created_at,
           })).filter((b) => b.id));
@@ -72,7 +73,10 @@ export function BattleHistory() {
             <div key={b.id} className="flex items-center justify-between p-3 rounded-lg bg-secondary/30">
               <div className="flex items-center gap-3">
                 <Swords className="w-4 h-4 text-accent" />
-                <span className="text-sm font-mono text-foreground">{b.room_code}</span>
+                <span className="text-sm font-mono text-foreground">
+                  {b.display_name ? `${b.display_name}` : b.room_code}
+                  <span className="text-muted-foreground text-xs ml-1.5">#{b.room_code}</span>
+                </span>
               </div>
               <div className="flex items-center gap-2">
                 <span className={`text-xs px-2 py-1 rounded-full ${b.status === 'active' ? 'bg-[hsl(120,50%,50%)]/20 text-[hsl(120,50%,50%)]' : 'bg-muted text-muted-foreground'}`}>

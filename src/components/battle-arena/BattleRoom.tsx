@@ -336,25 +336,45 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       .map(p => p.cf_handle?.trim())
       .filter(h => h && !h.startsWith("user_")) as string[];
 
+    // FIX BUG 1: Await the edge function response and use returned submissions directly
+    // Old code fired the edge function then immediately read stale cache — race condition.
+    let edgeFunctionData: Record<string, { submissions: CfSubmission[] }> | null = null;
     if (handles.length > 0) {
       try {
-        const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submission-poller`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-            },
-            body: JSON.stringify({ handles, battle_id: roomId }),
-          }
-        );
+        // FIX BUG 2 (401 ERROR): Supabase edge functions need TWO headers:
+        //   - apikey: the anon/publishable key (identifies the project)
+        //   - Authorization: Bearer <user's JWT> (authenticates the user)
+        // The old code used the anon key as Bearer token — Supabase rejected it as invalid JWT.
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        const accessToken = currentSession?.access_token;
 
-        if (!response.ok) {
-          console.warn("Failed to trigger poll, using cached data");
+        if (!accessToken) {
+          console.warn("[Battle] No session token, skipping edge function call");
+        } else {
+          const response = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submission-poller`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
+                "Authorization": `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({ handles, battle_id: roomId }),
+            }
+          );
+
+          if (response.ok) {
+            const json = await response.json();
+            edgeFunctionData = json.results ?? null;
+            console.log("[Battle] Edge function returned fresh data for", Object.keys(json.results ?? {}));
+          } else {
+            const errText = await response.text().catch(() => "unknown");
+            console.warn(`[Battle] Edge function failed (${response.status}): ${errText}`);
+          }
         }
       } catch (err) {
-        console.warn("Poll trigger failed:", err);
+        console.warn("[Battle] Edge function unreachable, falling back to cache:", err);
       }
     }
 
@@ -372,11 +392,17 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       }
 
       try {
-        const cached = await getCachedSubmissions(handle);
-        const subs = cached.submissions;
-
-        if (subs.length === 0 && cached.isStale) {
-          console.log(`[Battle] No cached data for ${handle}, will be fetched soon`);
+        // FIX BUG 1: Use edge function data if available, else fall back to cache
+        let subs: CfSubmission[] = [];
+        if (edgeFunctionData?.[handle]?.submissions) {
+          subs = edgeFunctionData[handle].submissions;
+          console.log(`[Battle] Using ${subs.length} fresh submissions for ${handle}`);
+        } else {
+          const cached = await getCachedSubmissions(handle);
+          subs = cached.submissions;
+          if (subs.length === 0 && cached.isStale) {
+            console.log(`[Battle] No cached data for ${handle}, will be fetched on next poll`);
+          }
         }
 
         logCfSubmissionMatchDebug(subs, startedSec, curProblems, 12);

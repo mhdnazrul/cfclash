@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Trophy, Medal, TrendingUp } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,7 +19,7 @@ export function LeaderboardContent() {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchLeaderboard = async () => {
+  const fetchLeaderboard = useCallback(async () => {
     const { data } = await supabase
       .from("leaderboard")
       .select("*")
@@ -27,7 +27,7 @@ export function LeaderboardContent() {
       .limit(50);
     if (data) setEntries(data);
     setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     fetchLeaderboard();
@@ -35,7 +35,7 @@ export function LeaderboardContent() {
       .on("postgres_changes", { event: "*", schema: "public", table: "leaderboard" }, () => fetchLeaderboard())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, []);
+  }, [fetchLeaderboard]);
 
   return (
     <section className="w-full px-6 py-8">

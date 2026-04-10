@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode, useRef } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useRef, useCallback } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -28,13 +28,15 @@ const AuthContext = createContext<AuthContextType>({
   refreshProfile: async () => {},
 });
 
-const SESSION_TIMEOUT_MS = 10000;
+// Generous timeout: if a Supabase query hasn't resolved in 20s, abort.
+// The old 8s timeout was too aggressive; no timeout caused indefinite hanging.
+const QUERY_TIMEOUT_MS = 20_000;
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+      setTimeout(() => reject(new Error(`Query timeout after ${ms}ms`)), ms)
     ),
   ]);
 }
@@ -44,134 +46,160 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const initRef = useRef(false);
 
-  const fetchProfile = async (userId: string, timeoutMs = 8000) => {
+  // Once profile is successfully loaded, don't clear it on transient errors
+  const profileLoadedRef = useRef(false);
+  // Track the current user ID to avoid stale closure issues
+  const currentUserIdRef = useRef<string | null>(null);
+
+  const fetchProfile = useCallback(async (userId: string) => {
     try {
       const { data, error } = await withTimeout(
         supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-        timeoutMs,
-        "Profile fetch timeout"
+        QUERY_TIMEOUT_MS
       );
-      
+
       if (error) {
-        console.error("fetchProfile select error:", error);
-        setProfile(null);
+        console.error("[Auth] fetchProfile error:", error);
+        if (!profileLoadedRef.current) setProfile(null);
         return;
       }
 
       if (!data) {
-        const { error: upsertErr } = await withTimeout(
-          supabase.from("profiles").upsert({ id: userId }),
-          timeoutMs,
-          "Profile upsert timeout"
+        // Profile row missing — auto-create (first login)
+        console.log("[Auth] No profile row, creating...");
+        await withTimeout(
+          supabase.from("profiles").upsert({ id: userId } as never),
+          QUERY_TIMEOUT_MS
         );
-        if (upsertErr) {
-          console.error("fetchProfile upsert error:", upsertErr);
-          setProfile(null);
-          return;
-        }
-        
-        const retry = await withTimeout(
+
+        const { data: retryData } = await withTimeout(
           supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-          timeoutMs,
-          "Profile retry fetch timeout"
+          QUERY_TIMEOUT_MS
         );
-        setProfile((retry.data as Profile | null) ?? null);
+
+        const p = (retryData as Profile | null) ?? null;
+        setProfile(p);
+        if (p) profileLoadedRef.current = true;
+        console.log("[Auth] Profile created:", p?.cf_handle ?? "no handle");
         return;
       }
-      
-      console.log("Profile fetched:", data);
-      setProfile((data as Profile | null) ?? null);
-    } catch (err) {
-      console.error("fetchProfile unexpected error:", err);
-      setProfile(null);
-    }
-  };
 
-  const refreshProfile = async () => {
-    if (user) await fetchProfile(user.id);
-  };
+      setProfile((data as Profile | null) ?? null);
+      profileLoadedRef.current = true;
+      console.log("[Auth] Profile loaded:", data.cf_handle ?? "no handle");
+    } catch (err) {
+      console.error("[Auth] fetchProfile error:", err);
+      if (!profileLoadedRef.current) setProfile(null);
+    }
+  }, []);
+
+  const refreshProfile = useCallback(async () => {
+    const uid = currentUserIdRef.current;
+    if (uid) await fetchProfile(uid);
+  }, [fetchProfile]);
 
   const isProfileComplete = Boolean(profile?.cf_handle && profile.cf_handle.trim().length > 0);
 
-  const initializeAuth = async (isInitial: boolean) => {
-    if (initRef.current && !isInitial) return;
-    initRef.current = true;
-
-    try {
-      const {
-        data: { session: initialSession },
-        error: sessionError
-      } = await withTimeout(
-        supabase.auth.getSession(),
-        SESSION_TIMEOUT_MS,
-        "Session fetch timeout - continuing without session"
-      );
-      
-      if (sessionError) {
-        console.error("Session error:", sessionError);
-      }
-      console.log("Initial session:", initialSession);
-
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
-      
-      if (initialSession?.user) {
-        await fetchProfile(initialSession.user.id);
-      } else {
-        setProfile(null);
-      }
-    } catch (err) {
-      console.error("Auth init exception:", err);
-      setSession(null);
-      setUser(null);
-      setProfile(null);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
     let isMounted = true;
-    const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
-      if (isMounted) {
-        console.warn("Auth initialization timeout - forcing loading to false");
+    // Whether initAuth has completed — onAuthStateChange should NOT
+    // fetch profile before this is done (to avoid double-fetch race).
+    let initDone = false;
+
+    const initAuth = async () => {
+      try {
+        const { data: { session: s }, error } = await withTimeout(
+          supabase.auth.getSession(),
+          QUERY_TIMEOUT_MS
+        );
+        if (!isMounted) return;
+        if (error) console.error("[Auth] getSession error:", error);
+
+        console.log("[Auth] Session:", s ? "exists" : "none");
+        setSession(s);
+        setUser(s?.user ?? null);
+        currentUserIdRef.current = s?.user?.id ?? null;
+
+        if (s?.user) {
+          await fetchProfile(s.user.id);
+        } else {
+          setProfile(null);
+        }
+      } catch (err) {
+        console.error("[Auth] Init error:", err);
+        if (isMounted) {
+          setSession(null);
+          setUser(null);
+          setProfile(null);
+        }
+      } finally {
+        initDone = true;
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    // Subscribe to auth events FIRST (Supabase requirement),
+    // but DON'T fetch profile from the handler until initAuth completes.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, nextSession) => {
+        if (!isMounted) return;
+        console.log("[Auth] Event:", _event);
+
+        if (_event === "SIGNED_OUT") {
+          setSession(null);
+          setUser(null);
+          setProfile(null);
+          profileLoadedRef.current = false;
+          currentUserIdRef.current = null;
+          setLoading(false);
+          return;
+        }
+
+        // Always update session/user state immediately
+        setSession(nextSession);
+        setUser(nextSession?.user ?? null);
+
+        if (!initDone) {
+          // initAuth hasn't finished yet — it will handle profile fetch.
+          // Don't race with it.
+          console.log("[Auth] Event before init complete, skipping profile fetch");
+          return;
+        }
+
+        // After init: only fetch if user changed
+        if (nextSession?.user) {
+          const prevUid = currentUserIdRef.current;
+          currentUserIdRef.current = nextSession.user.id;
+
+          if (!profileLoadedRef.current || prevUid !== nextSession.user.id) {
+            await fetchProfile(nextSession.user.id);
+          }
+        } else {
+          setProfile(null);
+          profileLoadedRef.current = false;
+          currentUserIdRef.current = null;
+        }
+
         setLoading(false);
       }
-    }, SESSION_TIMEOUT_MS + 2000);
+    );
 
-    initializeAuth(true).then(() => {
-      if (!isMounted) return;
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      console.log("Auth state changed:", _event, nextSession);
-      
-      if (!isMounted) return;
-      
-      setSession(nextSession);
-      setUser(nextSession?.user ?? null);
-      
-      if (nextSession?.user) {
-        await fetchProfile(nextSession.user.id);
-      } else {
-        setProfile(null);
-      }
-      
-      setLoading(false);
-    });
+    // Start init AFTER subscribing (so we don't miss events)
+    initAuth();
 
     return () => {
       isMounted = false;
-      clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <AuthContext.Provider value={{ user, session, loading, profile, isProfileComplete, refreshProfile }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, session, loading, profile, isProfileComplete, refreshProfile }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

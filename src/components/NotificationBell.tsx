@@ -20,6 +20,8 @@ export function NotificationBell() {
   const [items, setItems] = useState<NotificationRow[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  // FIX BUG 3: Track locally handled request IDs with their outcome
+  const [handledRequests, setHandledRequests] = useState<Record<string, "approved" | "rejected">>({});
   const unread = useMemo(() => items.filter((n) => !n.is_read).length, [items]);
 
   const fetchNotifications = useCallback(async () => {
@@ -102,49 +104,69 @@ export function NotificationBell() {
             ) : items.length === 0 ? (
               <p className="p-6 text-sm text-muted-foreground text-center">You&apos;re all caught up.</p>
             ) : (
-              items.map((n) => (
-                <div key={n.id} className="p-3 border-b border-border/40 last:border-0">
-                  <p className="text-sm text-foreground">{n.message}</p>
-                  {n.type === "join_request" && (
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const rid = n.metadata?.request_id;
-                          if (!rid) return;
-                          try {
-                            await approveRoomRequest(rid);
-                            toast.success("Approved");
-                            fetchNotifications();
-                          } catch (e: unknown) {
-                            toast.error(supabaseErrorMessage(e, "Failed to approve"));
-                          }
-                        }}
-                        className="text-xs px-2 py-1 rounded-md bg-emerald-500/15 text-emerald-400 font-medium"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const rid = n.metadata?.request_id;
-                          if (!rid) return;
-                          try {
-                            await declineRoomRequest(rid);
-                            toast.success("Rejected");
-                            fetchNotifications();
-                          } catch (e: unknown) {
-                            toast.error(supabaseErrorMessage(e, "Failed to reject"));
-                          }
-                        }}
-                        className="text-xs px-2 py-1 rounded-md bg-destructive/15 text-destructive font-medium"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
+              items.map((n) => {
+                const requestId = n.metadata?.request_id;
+                const localStatus = requestId ? handledRequests[requestId] : undefined;
+                // FIX BUG 3: Show buttons only for pending join_request type that hasn't been handled
+                const showButtons = n.type === "join_request" && !localStatus;
+
+                return (
+                  <div key={n.id} className="p-3 border-b border-border/40 last:border-0">
+                    <p className="text-sm text-foreground">{n.message}</p>
+                    {showButtons && (
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!requestId) return;
+                            try {
+                              await approveRoomRequest(requestId);
+                              toast.success("Approved");
+                              setHandledRequests((prev) => ({ ...prev, [requestId]: "approved" }));
+                              fetchNotifications();
+                            } catch (e: unknown) {
+                              toast.error(supabaseErrorMessage(e, "Failed to approve"));
+                            }
+                          }}
+                          className="text-xs px-2 py-1 rounded-md bg-emerald-500/15 text-emerald-400 font-medium"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!requestId) return;
+                            try {
+                              await declineRoomRequest(requestId);
+                              toast.success("Rejected");
+                              setHandledRequests((prev) => ({ ...prev, [requestId]: "rejected" }));
+                              fetchNotifications();
+                            } catch (e: unknown) {
+                              toast.error(supabaseErrorMessage(e, "Failed to reject"));
+                            }
+                          }}
+                          className="text-xs px-2 py-1 rounded-md bg-destructive/15 text-destructive font-medium"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                    {/* FIX BUG 3: Show handled status */}
+                    {localStatus === "approved" && (
+                      <p className="text-xs text-emerald-400 mt-1.5 font-medium">✓ Approved</p>
+                    )}
+                    {localStatus === "rejected" && (
+                      <p className="text-xs text-destructive mt-1.5 font-medium">✗ Rejected</p>
+                    )}
+                    {/* Also hide buttons for already-handled notification types */}
+                    {(n.type === "join_approved" || n.type === "join_rejected") && !localStatus && (
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        {n.type === "join_approved" ? "✓ Request was approved" : "✗ Request was rejected"}
+                      </p>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

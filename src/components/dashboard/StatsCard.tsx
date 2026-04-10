@@ -20,7 +20,7 @@ export function StatsCard() {
       .from("leaderboard")
       .select("*")
       .eq("user_id", user.id)
-      .single()
+      .maybeSingle()
       .then(({ data, error }) => {
         if (cancelled) return;
         

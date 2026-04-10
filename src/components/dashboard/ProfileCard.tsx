@@ -28,14 +28,22 @@ export function ProfileCard() {
 
   useEffect(() => {
     if (!profile?.cf_handle) return;
-    fetch(`https://codeforces.com/api/user.info?handles=${profile.cf_handle}`)
-      .then(r => r.json())
+    let cancelled = false;
+    fetch(`https://codeforces.com/api/user.info?handles=${encodeURIComponent(profile.cf_handle)}`)
+      .then(r => {
+        if (!r.ok) throw new Error(`CF API ${r.status}`);
+        return r.json();
+      })
       .then(data => {
+        if (cancelled) return;
         if (data.status === "OK" && data.result?.[0]) {
           const u = data.result[0];
           setCfUser({ handle: u.handle, rating: u.rating || 0, maxRating: u.maxRating || 0, rank: u.rank || "Unrated", avatar: u.titlePhoto });
         }
-      }).catch(() => {});
+      }).catch((err) => {
+        if (!cancelled) console.warn("ProfileCard: CF API error (non-critical):", err.message);
+      });
+    return () => { cancelled = true; };
   }, [profile?.cf_handle]);
 
   const displayUser = cfUser || { handle: profile?.cf_handle || "User", rating: 0, maxRating: 0, rank: "Unrated", avatar: "" };
