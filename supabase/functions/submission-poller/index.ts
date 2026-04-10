@@ -1,4 +1,8 @@
-import { createClient, SupabaseClient } from "jsr:@supabase/supabase-js@2";
+// deno-lint-ignore-file
+// @ts-nocheck — This file runs in Deno (Supabase Edge Functions), not Node/browser.
+// VS Code may show errors for Deno.serve/Deno.env — they are valid in the Deno runtime.
+
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 interface CfSubmission {
   id: number;
@@ -13,18 +17,16 @@ const MAX_BACKOFF_MS = 300_000;
 const BASE_DELAY_MS = 1000;
 const MAX_RETRIES = 3;
 
-const backoffMap = new Map<string, number>();
+const backoffMap = new Map();
 
-// CORS headers — must include "apikey" or the browser will block the preflight.
-// This was the root cause of the CORS error:
-//   "Request header field apikey is not allowed"
+// CORS headers — must include "apikey" so browser preflight doesn't block.
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-Deno.serve(async (req: Request) => {
+Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -36,9 +38,9 @@ Deno.serve(async (req: Request) => {
     const { handles, battle_id } = await req.json();
 
     if (!handles || !Array.isArray(handles) || handles.length === 0) {
-      return Response.json(
-        { error: "handles array is required" },
-        { status: 400, headers: corsHeaders }
+      return new Response(
+        JSON.stringify({ error: "handles array is required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -46,16 +48,16 @@ Deno.serve(async (req: Request) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!supabaseUrl || !supabaseKey) {
-      return Response.json(
-        { error: "Missing Supabase environment variables" },
-        { status: 500, headers: corsHeaders }
+      return new Response(
+        JSON.stringify({ error: "Missing Supabase environment variables" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const uniqueHandles = [...new Set(handles.filter((h: string) => h && !h.startsWith("user_")))];
-    const results: Record<string, { submissions: CfSubmission[]; error?: string }> = {};
+    const uniqueHandles = [...new Set(handles.filter((h) => h && !h.startsWith("user_")))];
+    const results = {};
 
     console.log("[submission-poller] Polling", uniqueHandles.length, "handles for battle:", battle_id);
 
@@ -71,31 +73,32 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return Response.json({
-      success: true,
-      battle_id,
-      results,
-      polled_at: new Date().toISOString(),
-    }, {
-      headers: corsHeaders,
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        battle_id,
+        results,
+        polled_at: new Date().toISOString(),
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
 
   } catch (error) {
     console.error("[submission-poller] Error:", error);
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500, headers: corsHeaders }
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
 
-async function pollWithBackoff(handle: string): Promise<{ submissions: CfSubmission[]; error?: string }> {
+async function pollWithBackoff(handle) {
   const backoffUntil = backoffMap.get(handle);
   if (backoffUntil && Date.now() < backoffUntil) {
     await delay(backoffUntil - Date.now());
   }
 
-  let lastError: Error | null = null;
+  let lastError = null;
   
   for (let retry = 0; retry <= MAX_RETRIES; retry++) {
     if (retry > 0) {
@@ -150,11 +153,7 @@ async function pollWithBackoff(handle: string): Promise<{ submissions: CfSubmiss
   return { submissions: [], error: lastError?.message };
 }
 
-async function updateCache(
-  supabase: SupabaseClient,
-  handle: string,
-  submissions: CfSubmission[]
-): Promise<void> {
+async function updateCache(supabase, handle, submissions) {
   const now = new Date();
   const fetchedAt = now.toISOString();
   const nextFetchAt = new Date(now.getTime() + POLL_INTERVAL_MS).toISOString();
@@ -163,7 +162,7 @@ async function updateCache(
     .from("submission_cache")
     .upsert({
       cf_handle: handle,
-      submissions: submissions as unknown as string,
+      submissions: submissions,
       fetched_at: fetchedAt,
       next_fetch_at: nextFetchAt,
       updated_at: fetchedAt,
@@ -172,6 +171,6 @@ async function updateCache(
     });
 }
 
-function delay(ms: number): Promise<void> {
+function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

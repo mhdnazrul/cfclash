@@ -336,42 +336,23 @@ export function BattleRoom({ roomId }: { roomId: string }) {
       .map(p => p.cf_handle?.trim())
       .filter(h => h && !h.startsWith("user_")) as string[];
 
-    // FIX BUG 1: Await the edge function response and use returned submissions directly
-    // Old code fired the edge function then immediately read stale cache — race condition.
+    // Call edge function using Supabase SDK — handles auth (JWT + apikey) automatically.
+    // Raw fetch() was causing 401 "Invalid JWT" because the gateway rejected expired/stale tokens.
+    // supabase.functions.invoke() always sends a fresh, valid token.
     let edgeFunctionData: Record<string, { submissions: CfSubmission[] }> | null = null;
     if (handles.length > 0) {
       try {
-        // FIX BUG 2 (401 ERROR): Supabase edge functions need TWO headers:
-        //   - apikey: the anon/publishable key (identifies the project)
-        //   - Authorization: Bearer <user's JWT> (authenticates the user)
-        // The old code used the anon key as Bearer token — Supabase rejected it as invalid JWT.
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
-        const accessToken = currentSession?.access_token;
+        const { data, error: fnError } = await supabase.functions.invoke("submission-poller", {
+          body: { handles, battle_id: roomId },
+        });
 
-        if (!accessToken) {
-          console.warn("[Battle] No session token, skipping edge function call");
+        if (fnError) {
+          console.warn("[Battle] Edge function error:", fnError.message);
+        } else if (data?.results) {
+          edgeFunctionData = data.results;
+          console.log("[Battle] Edge function returned fresh data for", Object.keys(data.results));
         } else {
-          const response = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submission-poller`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY,
-                "Authorization": `Bearer ${accessToken}`,
-              },
-              body: JSON.stringify({ handles, battle_id: roomId }),
-            }
-          );
-
-          if (response.ok) {
-            const json = await response.json();
-            edgeFunctionData = json.results ?? null;
-            console.log("[Battle] Edge function returned fresh data for", Object.keys(json.results ?? {}));
-          } else {
-            const errText = await response.text().catch(() => "unknown");
-            console.warn(`[Battle] Edge function failed (${response.status}): ${errText}`);
-          }
+          console.warn("[Battle] Edge function returned no results");
         }
       } catch (err) {
         console.warn("[Battle] Edge function unreachable, falling back to cache:", err);
