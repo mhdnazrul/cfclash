@@ -43,7 +43,8 @@ Desktop.ini
 AGENTS.md
 # Supabase CLI local state
 .supabase/
-
+supabase/.temp/
+src/lib/submission-poller.ts
 # Local secrets / backups
 supabase_info.txt
 supabase_info.txt.txt
