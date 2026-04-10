@@ -40,7 +40,6 @@ Desktop.ini
 *.sw?
 
 # Local / scratch (not for GitHub)
-temp/
 AGENTS.md
 # Supabase CLI local state
 .supabase/
